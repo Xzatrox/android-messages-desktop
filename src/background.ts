@@ -8,6 +8,7 @@ import { MenuManager } from "./helpers/menuManager";
 import { setSettingsFlushEnabled, settings } from "./helpers/settings";
 import { Conversation, TrayManager } from "./helpers/trayManager";
 import { popupContextMenu } from "./menu/contextMenu";
+import { ViewManager } from "./services/viewManager";
 import fs from "fs";
 
 const {
@@ -21,6 +22,7 @@ const {
 
 let mainWindow: BrowserWindow;
 let trayManager: TrayManager;
+let viewManager: ViewManager | null = null;
 
 const gotTheLock = app.requestSingleInstanceLock();
 
@@ -110,7 +112,12 @@ if (gotTheLock) {
         })
     );
 
-    mainWindow.loadURL("https://messages.google.com/web/");
+    if (settings.chatEnabled.value) {
+      viewManager = new ViewManager(mainWindow);
+      mainWindow.on('resize', () => viewManager?.updateBounds());
+    } else {
+      mainWindow.loadURL("https://messages.google.com/web/");
+    }
 
     trayManager.startIfEnabled();
     settings.showIconsInRecentConversationTrayEnabled.subscribe(() =>
@@ -204,5 +211,13 @@ if (gotTheLock) {
       path.resolve(RESOURCES_PATH, "icons", "64x64.png")
     );
     return Buffer.from(bitmap).toString("base64");
+  });
+
+  ipcMain.on("switch-view", (_event, view: "messages" | "chat") => {
+    viewManager?.switchTo(view);
+  });
+
+  ipcMain.on("set-chat-unread-status", (_event, unreadStatus: boolean) => {
+    trayManager.setUnread(unreadStatus);
   });
 }

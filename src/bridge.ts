@@ -10,6 +10,7 @@ import {
   focusFunctions,
   recentThreadObserver,
 } from "./preload/observers";
+import { createChatUnreadObserver } from "./preload/chat_observers";
 
 declare global {
   interface Window {
@@ -18,6 +19,12 @@ declare global {
 }
 
 const preload_init = () => {
+    const isChat = window.location.hostname === 'chat.google.com';
+
+    if (isChat) {
+      setTimeout(() => createChatUnreadObserver(), 1000);
+      return;
+    }
 
     if (IS_MAC) {
       const titlebarStyle = `#amd-titlebar {
@@ -99,13 +106,23 @@ contextBridge.exposeInMainWorld("interop", {
     const data =  await ipcRenderer.invoke("get-icon");
     return `data:image/png;base64,${data}`;
   },
+  switch_view: (view: string) => {
+    ipcRenderer.send("switch-view", view);
+  },
   preload_init,
 });
 webFrame.executeJavaScript(`
-  window.addEventListener("load", async () => {
-    window.interop.preload_init();
-    window.icon_data_uri = await window.interop.get_icon();
-  });
+  if (document.readyState === 'loading') {
+    window.addEventListener("DOMContentLoaded", async () => {
+      window.interop.preload_init();
+      window.icon_data_uri = await window.interop.get_icon();
+    });
+  } else {
+    (async () => {
+      window.interop.preload_init();
+      window.icon_data_uri = await window.interop.get_icon();
+    })();
+  }
 `);
 webFrame.executeJavaScript(`window.OldNotification = window.Notification;
 window.Notification = function (title, options) {
