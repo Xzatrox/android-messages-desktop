@@ -1,5 +1,4 @@
-import { app, Event as ElectronEvent, ipcMain, shell } from "electron";
-import { BrowserWindow } from "electron/main";
+import { app, Event as ElectronEvent, ipcMain, shell, BrowserWindow } from "electron";
 import path from "path";
 import process from "process";
 import { checkForUpdate } from "./helpers/autoUpdate";
@@ -76,7 +75,7 @@ if (gotTheLock) {
       icon: IS_LINUX
         ? path.resolve(RESOURCES_PATH, "icons", "128x128.png")
         : undefined,
-      titleBarStyle: IS_MAC ? "hiddenInset" : "default",
+      titleBarStyle: settings.chatEnabled.value && IS_MAC ? "default" : (IS_MAC ? "hiddenInset" : "default"),
       webPreferences: {
         preload: IS_DEV
           ? path.resolve(app.getAppPath(), "bridge.js")
@@ -99,15 +98,10 @@ if (gotTheLock) {
         callback({
           requestHeaders: {
             ...requestHeaders,
-            // Specifically, we are ONLY removing the Electron portion of the agent
-            // Found via https://old.reddit.com/r/electronjs/comments/eiy2sf/google_blocking_log_in_from_electron_apps/fcvuwd9/
-            // Referenced at this link https://github.com/firebase/firebase-js-sdk/issues/2478#issuecomment-571773318
-            // "User-Agent": mainWindow.webContents.userAgent.replace(
-            //   "Electron/" + process.versions.electron,
-            //   ""
-            // ),
-            "User-Agent":
-              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/2000.36 (KHTML, like Gecko) Chrome/2000.0.0.0 Safari/2000.36",
+            "User-Agent": mainWindow.webContents.userAgent.replace(
+              "Electron/" + process.versions.electron,
+              ""
+            ),
           },
         })
     );
@@ -157,6 +151,9 @@ if (gotTheLock) {
     });
 
     mainWindow.webContents.setWindowOpenHandler((details) => {
+      if (details.url.includes('accounts.google.com') || details.url.includes('gstatic.com')) {
+        return { action: 'allow', overrideBrowserWindowOptions: { parent: mainWindow, modal: false } };
+      }
       shell.openExternal(details.url);
       return { action: "deny" };
     });

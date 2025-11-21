@@ -1,7 +1,8 @@
-import { BrowserView, BrowserWindow } from "electron";
-import { IS_DEV } from "../helpers/constants";
+import { BrowserView, BrowserWindow, ipcMain } from "electron";
+import { IS_DEV, IS_MAC } from "../helpers/constants";
 import path from "path";
 import { app } from "electron";
+import fs from "fs";
 
 export type ViewType = "messages" | "chat";
 
@@ -28,11 +29,15 @@ export class ViewManager {
     });
 
     this.messagesView = new BrowserView({
-      webPreferences: { preload: preloadPath },
+      webPreferences: { 
+        session: window.webContents.session,
+      },
     });
 
     this.chatView = new BrowserView({
-      webPreferences: { preload: preloadPath },
+      webPreferences: { 
+        session: window.webContents.session,
+      },
     });
 
     this.tabBarView.setBackgroundColor('#1a73e8');
@@ -49,6 +54,7 @@ export class ViewManager {
             height: 40px; 
             font-family: Arial, sans-serif; 
             -webkit-user-select: none; 
+            -webkit-app-region: drag;
             align-items: center;
           }
           .tab { 
@@ -57,6 +63,7 @@ export class ViewManager {
             cursor: pointer; 
             font-size: 14px; 
             line-height: 20px;
+            -webkit-app-region: no-drag;
           }
           .tab.active { 
             background: #1557b0; 
@@ -76,14 +83,78 @@ export class ViewManager {
       </html>
     `));
 
-    this.messagesView.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-    this.chatView.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    // Inject minimal notification handler for both views
+    this.messagesView.webContents.on('did-finish-load', () => {
+      if (this.messagesView.webContents.getURL().includes('messages.google.com/web')) {
+        this.messagesView.webContents.executeJavaScript(`
+          if (!window.notificationHandlerInstalled) {
+            window.notificationHandlerInstalled = true;
+            window.OldNotification = window.Notification;
+            window.Notification = function(title, options) {
+              const notification = new window.OldNotification(title, options);
+              return notification;
+            };
+            window.Notification.permission = "granted";
+            window.Notification.requestPermission = async () => "granted";
+          }
+        `).catch(() => {});
+      }
+    });
+
+    let chatAuthenticated = false;
+    
+    this.chatView.webContents.on('did-finish-load', () => {
+      const url = this.chatView.webContents.getURL();
+      
+      // Once authenticated and on chat.google.com, recreate view with preload
+      if (url.includes('chat.google.com') && !url.includes('accounts.google.com') && !chatAuthenticated) {
+        chatAuthenticated = true;
+        const bounds = this.chatView.getBounds();
+        this.window.removeBrowserView(this.chatView);
+        
+        this.chatView = new BrowserView({
+          webPreferences: { 
+            session: window.webContents.session,
+            preload: preloadPath,
+            contextIsolation: false,
+            nodeIntegration: false,
+          },
+        });
+        
+        this.chatView.webContents.on('ipc-message', (_event, channel, ...args) => {
+          if (channel === 'set-chat-unread-status') {
+            ipcMain.emit('set-chat-unread-status', _event, ...args);
+          }
+        });
+        
+        this.chatView.webContents.on('did-finish-load', () => {
+          if (this.chatView.webContents.getURL().includes('chat.google.com')) {
+            this.chatView.webContents.executeJavaScript('window.interop?.preload_init()').catch(() => {});
+          }
+        });
+        
+        // Add navigation handler only after authentication
+        this.chatView.webContents.on('will-navigate', (event, url) => {
+          if (url.includes('google.com')) {
+            return;
+          }
+          event.preventDefault();
+        });
+        
+        if (this.currentView === 'chat') {
+          this.window.addBrowserView(this.chatView);
+          this.chatView.setBounds(bounds);
+        }
+        
+        this.chatView.webContents.loadURL(url);
+      }
+    });
 
     this.messagesView.webContents.loadURL("https://messages.google.com/web/");
-    this.chatView.webContents.loadURL("https://chat.google.com/");
+    this.chatView.webContents.loadURL("https://accounts.google.com/signin/v2/identifier?continue=https://chat.google.com&flowName=GlifWebSignIn");
 
-    this.window.addBrowserView(this.tabBarView);
     this.window.addBrowserView(this.messagesView);
+    this.window.addBrowserView(this.tabBarView);
     this.updateBounds();
   }
 
@@ -94,20 +165,21 @@ export class ViewManager {
     
     this.window.removeBrowserView(oldView);
     this.window.addBrowserView(newView);
-    this.window.setTopBrowserView(this.tabBarView);
     this.updateBounds();
+    this.window.setTopBrowserView(this.tabBarView);
     
     this.tabBarView.webContents.executeJavaScript(`
       msg.className = 'tab${view === 'messages' ? ' active' : ''}';
       chat.className = 'tab${view === 'chat' ? ' active' : ''}';
-    `);
+    `).catch(() => {});
   }
 
   updateBounds() {
     const bounds = this.window.getContentBounds();
-    this.tabBarView.setBounds({ x: 0, y: 0, width: bounds.width, height: 40 });
+    const tabBarHeight = 40;
+    this.tabBarView.setBounds({ x: 0, y: 0, width: bounds.width, height: tabBarHeight });
     const view = this.currentView === "messages" ? this.messagesView : this.chatView;
-    view.setBounds({ x: 0, y: 40, width: bounds.width, height: bounds.height - 40 });
+    view.setBounds({ x: 0, y: tabBarHeight, width: bounds.width, height: bounds.height - tabBarHeight });
   }
 
   getCurrentView() {

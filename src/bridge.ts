@@ -15,14 +15,23 @@ import { createChatUnreadObserver } from "./preload/chat_observers";
 declare global {
   interface Window {
     interop: any;
+    icon_data_uri: string;
+    OldNotification: typeof Notification;
+    notificationHandlerInstalled?: boolean;
   }
 }
 
 const preload_init = () => {
     const isChat = window.location.hostname === 'chat.google.com';
+    console.log('Preload init called for:', window.location.hostname, 'isChat:', isChat);
 
     if (isChat) {
-      setTimeout(() => createChatUnreadObserver(), 1000);
+      console.log('Initializing chat observers');
+      // Wait longer for chat to fully load on macOS
+      setTimeout(() => {
+        console.log('Creating chat unread observer');
+        createChatUnreadObserver();
+      }, 2000);
       return;
     }
 
@@ -88,72 +97,111 @@ const preload_init = () => {
     });
 }
 
-ipcRenderer.on("focus-conversation", (event, i) => {
-  focusFunctions[i]();
-});
+// Check if we're being injected via executeJavaScript or loaded as preload
+const isInjected = typeof window !== 'undefined' && !window.interop;
 
-contextBridge.exposeInMainWorld("interop", {
-  show_main_window: () => {
-    ipcRenderer.send("show-main-window");
-  },
-  flash_main: () => {
-    ipcRenderer.send("flash-main-window-if-not-focused");
-  },
-  should_hide: () => {
-    return ipcRenderer.sendSync("should-hide-notification-content");
-  },
-  get_icon: async () => {
-    const data =  await ipcRenderer.invoke("get-icon");
-    return `data:image/png;base64,${data}`;
-  },
-  switch_view: (view: string) => {
-    ipcRenderer.send("switch-view", view);
-  },
-  preload_init,
-});
-webFrame.executeJavaScript(`
-  if (document.readyState === 'loading') {
-    window.addEventListener("DOMContentLoaded", async () => {
+if (isInjected) {
+  // When injected, use require directly
+  const { ipcRenderer } = require('electron');
+  
+  window.interop = {
+    show_main_window: () => {
+      ipcRenderer.send("show-main-window");
+    },
+    flash_main: () => {
+      ipcRenderer.send("flash-main-window-if-not-focused");
+    },
+    should_hide: () => {
+      return ipcRenderer.sendSync("should-hide-notification-content");
+    },
+    get_icon: async () => {
+      const data = await ipcRenderer.invoke("get-icon");
+      return `data:image/png;base64,${data}`;
+    },
+    switch_view: (view: string) => {
+      ipcRenderer.send("switch-view", view);
+    },
+    preload_init,
+  };
+  
+  ipcRenderer.on("focus-conversation", (_event: any, i: number) => {
+    focusFunctions[i]();
+  });
+} else {
+  // When loaded as preload, use contextBridge
+  ipcRenderer.on("focus-conversation", (_event: any, i: number) => {
+    focusFunctions[i]();
+  });
+
+  contextBridge.exposeInMainWorld("interop", {
+    show_main_window: () => {
+      ipcRenderer.send("show-main-window");
+    },
+    flash_main: () => {
+      ipcRenderer.send("flash-main-window-if-not-focused");
+    },
+    should_hide: () => {
+      return ipcRenderer.sendSync("should-hide-notification-content");
+    },
+    get_icon: async () => {
+      const data =  await ipcRenderer.invoke("get-icon");
+      return `data:image/png;base64,${data}`;
+    },
+    switch_view: (view: string) => {
+      ipcRenderer.send("switch-view", view);
+    },
+    preload_init,
+  });
+}
+
+// Initialize immediately when injected (we already checked URL before injection)
+if (isInjected) {
+  (async () => {
+    try {
       window.interop.preload_init();
       window.icon_data_uri = await window.interop.get_icon();
-    });
-  } else {
-    (async () => {
-      window.interop.preload_init();
-      window.icon_data_uri = await window.interop.get_icon();
-    })();
-  }
-`);
-webFrame.executeJavaScript(`window.OldNotification = window.Notification;
-window.Notification = function (title, options) {
-  try {
-    const hideContent = window.interop.should_hide();
+      
+      // Override Notification API
+      window.OldNotification = window.Notification;
+      (window.Notification as any) = function (title: string, options: NotificationOptions) {
+        try {
+          const hideContent = window.interop.should_hide();
 
-    const notificationOpts = hideContent
-      ? {
-          body: "Click to open",
-          icon: window.icon_data_uri
+          const notificationOpts = hideContent
+            ? {
+                body: "Click to open",
+                icon: window.icon_data_uri
+              }
+            : {
+                body: options?.body || "",
+                icon: options?.icon
+              };
+
+          const newTitle = hideContent ? "New Message" : title;
+          const notification = new window.OldNotification(newTitle, notificationOpts);
+          notification.addEventListener("click", () => {
+            window.interop.show_main_window();
+            document.dispatchEvent(new Event("focus"));
+          });
+          window.interop.flash_main();
+          return notification;
+        } catch (e) {
+          console.error(e);
+          console.trace();
         }
-      : {
-          body: options?.body || "",
-          icon: options?.icon
-        };
+      };
 
-    const newTitle = hideContent ? "New Message" : title;
-    const notification = new window.OldNotification(newTitle, notificationOpts);
-    notification.addEventListener("click", () => {
-      window.interop.show_main_window();
-      document.dispatchEvent(new Event("focus"));
-    });
-    window.interop.flash_main();
-    return notification;
-  } catch (e) {
-  console.error(e);
-  console.trace();
-  }
-};
-
-window.Notification.permission = "granted";
-window.Notification.requestPermission = async () => "granted";
-`);
-contextBridge.exposeInMainWorld("module", {exports: null});
+      Object.defineProperty(window.Notification, 'permission', {
+        get: () => 'granted' as NotificationPermission
+      });
+      window.Notification.requestPermission = async () => 'granted' as NotificationPermission;
+      
+      (window as any).module = {exports: null};
+    } catch (e) {
+      console.error('Failed to initialize injected preload:', e);
+    }
+  })();
+} else {
+  // When loaded as preload, use the original initialization logic
+  contextBridge.exposeInMainWorld("module", {exports: null} as any);
+}
