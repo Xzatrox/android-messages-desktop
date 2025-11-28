@@ -151,7 +151,8 @@ if (gotTheLock) {
     });
 
     mainWindow.webContents.setWindowOpenHandler((details) => {
-      if (details.url.includes('accounts.google.com') || details.url.includes('gstatic.com')) {
+      const url = new URL(details.url);
+      if ((url.hostname.includes('accounts.google.com') || url.hostname.includes('gstatic.com')) && url.hostname !== 'chat.google.com') {
         return { action: 'allow', overrideBrowserWindowOptions: { parent: mainWindow, modal: false } };
       }
       shell.openExternal(details.url);

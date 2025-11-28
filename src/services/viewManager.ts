@@ -1,4 +1,4 @@
-import { BrowserView, BrowserWindow, ipcMain } from "electron";
+import { BrowserView, BrowserWindow, ipcMain, shell } from "electron";
 import { IS_DEV, IS_MAC } from "../helpers/constants";
 import path from "path";
 import { app } from "electron";
@@ -99,6 +99,11 @@ export class ViewManager {
           }
         `).catch(() => {});
       }
+    });
+
+    this.chatView.webContents.setWindowOpenHandler((details) => {
+      shell.openExternal(details.url);
+      return { action: "deny" };
     });
 
     let chatAuthenticated = false;
